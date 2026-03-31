@@ -3,7 +3,7 @@
 import React, { useState } from 'react'
 import { Mic, Camera, KeyboardIcon, Shuffle, Zap, Heart, AlertCircle } from 'lucide-react'
 
-const VoiceBar = () => (
+const CaptureBar = () => (
   <div className="bg-card rounded-2xl p-6 mb-4">
     <div className="flex items-start gap-4">
       <div className="w-12 h-12 rounded-full bg-gradient-to-br from-blue-400 to-purple-500 flex items-center justify-center flex-shrink-0">
@@ -14,7 +14,7 @@ const VoiceBar = () => (
         <p className="text-sm text-t3 mb-3">Gasto, ideia, memória, tarefa... só falar</p>
         <div className="flex gap-2">
           <button className="w-8 h-8 rounded-full bg-border flex items-center justify-center hover:bg-border2">
-            <Camera className="w-4 h-4 text-t2" />
+            <Mic className="w-4 h-4 text-t2" />
           </button>
           <button className="w-8 h-8 rounded-full bg-border flex items-center justify-center hover:bg-border2">
             <KeyboardIcon className="w-4 h-4 text-t2" />
@@ -239,16 +239,29 @@ const Alerts = () => (
   </div>
 )
 
+const MicroJournal = () => (
+  <div className="bg-card rounded-2xl p-5 mb-4">
+    <h4 className="text-sm font-semibold text-t1 mb-4">📔 Micro-journal</h4>
+    <div>
+      <p className="text-sm text-t2 mb-3">Qual foi o melhor momento do dia?</p>
+      <input
+        type="text"
+        placeholder="Sua resposta..."
+        className="w-full px-4 py-3 rounded-xl bg-border text-t1 placeholder-t3 text-sm outline-none"
+      />
+    </div>
+  </div>
+)
+
 const TodayPage = () => {
   return (
     <div className="px-5 pb-24">
-      <VoiceBar />
-      <ThisDay />
-      <Redescubra />
+      <CaptureBar />
       <Briefing />
-      <ScoreHabits />
+      <MicroJournal />
       <MoodTracker />
       <Timeline />
+      <ScoreHabits />
       <Radar />
       <Alerts />
     </div>

@@ -2,20 +2,20 @@
 
 import { useState, useEffect } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { Clock, LayoutGrid, Users, BookOpen, Lightbulb, Search, Bell, Plus } from 'lucide-react'
+import { Sparkles, Globe, Users, Clock, Brain, Search, Bell, Plus } from 'lucide-react'
 import TodayPage from '@/components/today/TodayPage'
-import VidaPage from '@/components/vida/VidaPage'
+import MeuMundoPage from '@/components/world/MeuMundoPage'
 import PeoplePage from '@/components/people/PeoplePage'
-import LegacyPage from '@/components/legacy/LegacyPage'
+import MemoriasPage from '@/components/memories/MemoriasPage'
 import BrainPage from '@/components/brain/BrainPage'
 import CaptureSheet from '@/components/shared/CaptureSheet'
 
 const TABS = [
-  { id: 'hoje', label: 'Hoje', icon: Clock },
-  { id: 'vida', label: 'Vida', icon: LayoutGrid },
+  { id: 'hoje', label: 'Hoje', icon: Sparkles },
+  { id: 'mundo', label: 'Meu Mundo', icon: Globe },
   { id: 'pessoas', label: 'Pessoas', icon: Users },
-  { id: 'legado', label: 'Legado', icon: BookOpen },
-  { id: 'cerebro', label: 'Cérebro', icon: Lightbulb },
+  { id: 'memorias', label: 'Memórias', icon: Clock },
+  { id: 'cerebro', label: 'Cérebro', icon: Brain },
 ] as const
 
 type TabId = typeof TABS[number]['id']
@@ -74,9 +74,9 @@ export default function HomePage() {
       {/* Content */}
       <main className="flex-1 overflow-y-auto overflow-x-hidden scrollbar-hide scroll-smooth">
         <div className={tab === 'hoje' ? 'animate-page-in' : 'hidden'}><TodayPage /></div>
-        <div className={tab === 'vida' ? 'animate-page-in' : 'hidden'}><VidaPage /></div>
+        <div className={tab === 'mundo' ? 'animate-page-in' : 'hidden'}><MeuMundoPage /></div>
         <div className={tab === 'pessoas' ? 'animate-page-in' : 'hidden'}><PeoplePage /></div>
-        <div className={tab === 'legado' ? 'animate-page-in' : 'hidden'}><LegacyPage /></div>
+        <div className={tab === 'memorias' ? 'animate-page-in' : 'hidden'}><MemoriasPage /></div>
         <div className={tab === 'cerebro' ? 'animate-page-in' : 'hidden'}><BrainPage /></div>
       </main>
 

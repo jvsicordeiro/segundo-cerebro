@@ -1,603 +1,846 @@
--- ═══════════════════════════════════════════════════════
--- SEGUNDO CÉREBRO — Schema v2 (enxuto)
--- Supabase (PostgreSQL) · Projeto: sflxfdbubgoqzsnjlwyq
--- 2026-03-30
--- Removidas: grocery_items, cleaning_tasks, courses, symptoms, body_measures, investments
--- Absorvidas como categorias em tasks/goals ou jsonb
--- ═══════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- SEGUNDO CÉREBRO - SUPABASE SCHEMA v3
+-- Entity-Based Architecture
+-- Complete rewrite replacing module-based structure with universal entity system
+-- ═══════════════════════════════════════════════════════════════════════════════
 
--- Extensões
-create extension if not exists "pgcrypto";
-create extension if not exists "pg_trgm";
+-- Enable required extensions
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
--- ═══════════════════════════════════════════════════════
--- 0. HELPERS
--- ═══════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- HELPER FUNCTIONS
+-- ═══════════════════════════════════════════════════════════════════════════════
 
-create or replace function update_updated_at()
-returns trigger as $$
-begin
-  new.updated_at = now();
-  return new;
-end;
-$$ language plpgsql;
+-- Function to automatically update updated_at timestamp
+CREATE OR REPLACE FUNCTION update_updated_at()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = CURRENT_TIMESTAMP;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
 
-create or replace function create_updated_at_trigger(tbl text)
-returns void as $$
-begin
-  execute format(
-    'create trigger trg_%s_updated_at before update on %I
-     for each row execute function update_updated_at()',
-    tbl, tbl
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PROFILES TABLE (kept from v2)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS profiles (
+  id uuid PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+  full_name text,
+  nickname text,
+  avatar_url text,
+  birth_date date,
+  bio text,
+  settings jsonb DEFAULT '{"theme":"system","notifications":true,"family_mode":false,"language":"pt-BR"}'::jsonb,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own profile"
+  ON profiles
+  FOR SELECT
+  USING (auth.uid() = id);
+
+CREATE POLICY "Users can update their own profile"
+  ON profiles
+  FOR UPDATE
+  USING (auth.uid() = id)
+  WITH CHECK (auth.uid() = id);
+
+CREATE TRIGGER profiles_updated_at_trigger
+  BEFORE UPDATE ON profiles
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ENTITIES TABLE (THE CORE)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Core table for all entity types with flexible metadata
+-- Entity types: memory, product, task, event, place, note, purchase, habit, goal, wish,
+-- document, routine_entry, mood_entry, person, and custom types
+--
+-- Metadata examples by type:
+-- - product: {brand, price, store, category, rating, size, color, condition}
+-- - memory: {emotion, importance, location, participants, duration_hours}
+-- - task: {due_date, priority, completed, category, effort_hours}
+-- - event: {start_time, end_time, location, participants, category}
+-- - place: {latitude, longitude, city, country, visited_count}
+-- - purchase: {amount, store, category, payment_method, warranty_months}
+-- - habit: {frequency, streak_days, last_done, goal_count}
+-- - mood_entry: {mood_score, energy, sleep_quality, weather, notes}
+
+CREATE TABLE IF NOT EXISTS entities (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  title text NOT NULL,
+  description text,
+  metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+  date date,
+  is_archived boolean DEFAULT false,
+  is_favorite boolean DEFAULT false,
+  is_legacy boolean DEFAULT false,
+  privacy_level text DEFAULT 'private' CHECK (privacy_level IN ('private', 'shared', 'emergency')),
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE entities ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own entities"
+  ON entities
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can insert their own entities"
+  ON entities
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own entities"
+  ON entities
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own entities"
+  ON entities
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE TRIGGER entities_updated_at_trigger
+  BEFORE UPDATE ON entities
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+-- Indexes for entity queries
+CREATE INDEX idx_entities_user_id ON entities(user_id);
+CREATE INDEX idx_entities_type ON entities(type);
+CREATE INDEX idx_entities_date ON entities(date);
+CREATE INDEX idx_entities_is_archived ON entities(is_archived);
+CREATE INDEX idx_entities_user_date ON entities(user_id, date);
+CREATE INDEX idx_entities_metadata ON entities USING GIN(metadata);
+CREATE INDEX idx_entities_title_trgm ON entities USING GIN(title gin_trgm_ops);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- TAGS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS tags (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  color text,
+  icon text,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, name)
+);
+
+ALTER TABLE tags ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their own tags"
+  ON tags
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage their own tags"
+  ON tags
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their own tags"
+  ON tags
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their own tags"
+  ON tags
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE INDEX idx_tags_user_id ON tags(user_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ENTITY TAGS (Many-to-Many)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS entity_tags (
+  entity_id uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  tag_id uuid NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+  PRIMARY KEY (entity_id, tag_id)
+);
+
+ALTER TABLE entity_tags ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view tags on their entities"
+  ON entity_tags
+  FOR SELECT
+  USING (
+    EXISTS (
+      SELECT 1 FROM entities WHERE id = entity_id AND user_id = auth.uid()
+    )
   );
-end;
-$$ language plpgsql;
 
--- ═══════════════════════════════════════════════════════
--- 1. PROFILES
--- ═══════════════════════════════════════════════════════
+CREATE POLICY "Users can manage tags on their entities"
+  ON entity_tags
+  FOR INSERT
+  WITH CHECK (
+    EXISTS (
+      SELECT 1 FROM entities WHERE id = entity_id AND user_id = auth.uid()
+    )
+  );
 
-create table profiles (
-  id          uuid primary key references auth.users(id) on delete cascade,
-  full_name   text not null default '',
-  nickname    text not null default '',
-  avatar_url  text,
-  birth_date  date,
-  bio         text,
-  settings    jsonb not null default '{"theme":"light","notifications":true,"family_mode":false,"weekly_review_day":0}'::jsonb,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+CREATE POLICY "Users can delete tags from their entities"
+  ON entity_tags
+  FOR DELETE
+  USING (
+    EXISTS (
+      SELECT 1 FROM entities WHERE id = entity_id AND user_id = auth.uid()
+    )
+  );
+
+CREATE INDEX idx_entity_tags_entity_id ON entity_tags(entity_id);
+CREATE INDEX idx_entity_tags_tag_id ON entity_tags(tag_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- CONNECTIONS TABLE (Entity-to-Entity Relationships)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Establishes relationships between entities
+-- Relationship types: part_of, bought_at, with_person, used_in, related_to, triggered_by, etc.
+
+CREATE TABLE IF NOT EXISTS connections (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  entity_a_id uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  entity_b_id uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  relationship text NOT NULL,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(entity_a_id, entity_b_id, relationship)
 );
-select create_updated_at_trigger('profiles');
 
-create or replace function handle_new_user()
-returns trigger as $$
-begin
-  insert into profiles (id, full_name)
-  values (new.id, coalesce(new.raw_user_meta_data->>'full_name', ''));
-  return new;
-end;
-$$ language plpgsql security definer;
+ALTER TABLE connections ENABLE ROW LEVEL SECURITY;
 
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function handle_new_user();
+CREATE POLICY "Users can view connections between their entities"
+  ON connections
+  FOR SELECT
+  USING (auth.uid() = user_id);
 
--- ═══════════════════════════════════════════════════════
--- 2. PEOPLE
--- ═══════════════════════════════════════════════════════
+CREATE POLICY "Users can create connections between their entities"
+  ON connections
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
 
-create type person_category as enum ('family','partner','friend','work','professional','other');
+CREATE POLICY "Users can delete connections between their entities"
+  ON connections
+  FOR DELETE
+  USING (auth.uid() = user_id);
 
-create table people (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  category    person_category not null default 'other',
-  role        text,
-  emoji       text default '👤',
-  color       text default '#007AFF',
-  birth_date  date,
-  since_date  date,
-  notes       text,
-  is_group    boolean not null default false,
-  group_size  int,
-  sort_order  int not null default 0,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+CREATE INDEX idx_connections_user_id ON connections(user_id);
+CREATE INDEX idx_connections_entity_a_id ON connections(entity_a_id);
+CREATE INDEX idx_connections_entity_b_id ON connections(entity_b_id);
+CREATE INDEX idx_connections_relationship ON connections(relationship);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MEDIA TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Stores references to media associated with entities
+-- Types: image, video, audio, document
+
+CREATE TABLE IF NOT EXISTS media (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  entity_id uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  url text NOT NULL,
+  type text NOT NULL CHECK (type IN ('image', 'video', 'audio', 'document')),
+  caption text,
+  order_index int DEFAULT 0,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_people_user on people(user_id);
-select create_updated_at_trigger('people');
 
--- ═══════════════════════════════════════════════════════
--- 3. COLLECTIONS
--- ═══════════════════════════════════════════════════════
+ALTER TABLE media ENABLE ROW LEVEL SECURITY;
 
-create table collections (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  emoji       text default '📁',
-  color       text default '#007AFF',
+CREATE POLICY "Users can view media from their entities"
+  ON media
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can upload media to their entities"
+  ON media
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete media from their entities"
+  ON media
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE INDEX idx_media_user_id ON media(user_id);
+CREATE INDEX idx_media_entity_id ON media(entity_id);
+CREATE INDEX idx_media_type ON media(type);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- PEOPLE TABLE (Dedicated)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Dedicated table for important people relationships
+-- Relationships: pai, mãe, esposa, marido, filho, filha, amigo, namorado, namorada, colega, chefe, mentor, etc.
+-- Categories: family, friends, work, professional, acquaintance
+
+CREATE TABLE IF NOT EXISTS people (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  entity_id uuid NOT NULL REFERENCES entities(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  relationship text,
+  category text,
+  phone text,
+  email text,
+  birth_date date,
+  avatar_url text,
+  notes text,
+  is_favorite boolean DEFAULT false,
+  last_contact timestamptz,
+  contact_frequency_days int,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE people ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their people"
+  ON people
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can manage their people"
+  ON people
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their people"
+  ON people
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their people"
+  ON people
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE TRIGGER people_updated_at_trigger
+  BEFORE UPDATE ON people
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_people_user_id ON people(user_id);
+CREATE INDEX idx_people_entity_id ON people(entity_id);
+CREATE INDEX idx_people_category ON people(category);
+CREATE INDEX idx_people_is_favorite ON people(is_favorite);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- COLLECTIONS TABLE (User-Defined Flexible Collections)
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Allows users to create custom collections with custom fields
+-- Example collections: "Meus Carros", "Jogos do SPFC", "Produtos de Cabelo"
+--
+-- fields_schema structure: [
+--   {"name":"modelo","type":"text","required":true},
+--   {"name":"ano","type":"number","required":false},
+--   {"name":"foto","type":"image","required":false}
+-- ]
+
+CREATE TABLE IF NOT EXISTS collections (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name text NOT NULL,
   description text,
-  sort_order  int not null default 0,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index idx_collections_user on collections(user_id);
-select create_updated_at_trigger('collections');
-
--- ═══════════════════════════════════════════════════════
--- 4. TAGS
--- ═══════════════════════════════════════════════════════
-
-create type tag_type as enum ('emotion','place','person','topic','custom');
-
-create table tags (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  type        tag_type not null default 'custom',
-  color       text,
-  constraint  uq_tag_user_name unique (user_id, name)
-);
-create index idx_tags_user on tags(user_id);
-
--- ═══════════════════════════════════════════════════════
--- 5. MEMORIES (entidade central)
--- ═══════════════════════════════════════════════════════
-
-create type memory_type as enum ('memory','thought','event','milestone','quote','advice','dream');
-
-create table memories (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  type          memory_type not null default 'memory',
-  title         text not null,
-  body          text,
-  date_start    date,
-  date_end      date,
-  date_display  text,
-  location      text,
-  emoji         text,
-  is_legacy     boolean not null default false,
-  is_favorite   boolean not null default false,
-  media_urls    text[] default '{}',
-  voice_url     text,
-  metadata      jsonb default '{}',
-  collection_id uuid references collections(id) on delete set null,
-  sort_order    int not null default 0,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-create index idx_memories_user on memories(user_id);
-create index idx_memories_date on memories(user_id, date_start desc);
-create index idx_memories_collection on memories(collection_id);
-create index idx_memories_legacy on memories(user_id, is_legacy) where is_legacy = true;
-create index idx_memories_search on memories using gin (
-  (to_tsvector('portuguese', coalesce(title,'') || ' ' || coalesce(body,'')))
-);
-select create_updated_at_trigger('memories');
-
--- Junction tables
-create table memory_people (
-  memory_id  uuid not null references memories(id) on delete cascade,
-  person_id  uuid not null references people(id) on delete cascade,
-  primary key (memory_id, person_id)
+  icon text,
+  color text,
+  fields_schema jsonb NOT NULL DEFAULT '[]'::jsonb,
+  sort_order int DEFAULT 0,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
 
-create table memory_tags (
-  memory_id  uuid not null references memories(id) on delete cascade,
-  tag_id     uuid not null references tags(id) on delete cascade,
-  primary key (memory_id, tag_id)
+ALTER TABLE collections ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Users can view their collections"
+  ON collections
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create collections"
+  ON collections
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their collections"
+  ON collections
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their collections"
+  ON collections
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE TRIGGER collections_updated_at_trigger
+  BEFORE UPDATE ON collections
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_collections_user_id ON collections(user_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- COLLECTION ITEMS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Items within collections with field values matching the collection's schema
+-- field_values structure matches the collection's fields_schema
+
+CREATE TABLE IF NOT EXISTS collection_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  collection_id uuid NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+  entity_id uuid REFERENCES entities(id) ON DELETE SET NULL,
+  field_values jsonb NOT NULL DEFAULT '{}'::jsonb,
+  sort_order int DEFAULT 0,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
 
-create table memory_connections (
-  memory_a  uuid not null references memories(id) on delete cascade,
-  memory_b  uuid not null references memories(id) on delete cascade,
-  label     text,
-  primary key (memory_a, memory_b),
-  constraint chk_no_self check (memory_a <> memory_b)
-);
+ALTER TABLE collection_items ENABLE ROW LEVEL SECURITY;
 
--- ═══════════════════════════════════════════════════════
--- 6. TASKS
--- ═══════════════════════════════════════════════════════
+CREATE POLICY "Users can view their collection items"
+  ON collection_items
+  FOR SELECT
+  USING (auth.uid() = user_id);
 
-create type task_priority as enum ('urgent','high','medium','low');
-create type recurrence as enum ('daily','weekly','biweekly','monthly','yearly');
+CREATE POLICY "Users can add items to their collections"
+  ON collection_items
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
 
-create table tasks (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  title         text not null,
-  notes         text,
-  priority      task_priority not null default 'medium',
-  due_date      date,
-  due_time      time,
-  done          boolean not null default false,
-  done_at       timestamptz,
-  recurrence    recurrence,
-  category      text,     -- "Clinai","Casa","Pessoal","Mercado","Limpeza" etc.
-  person_id     uuid references people(id) on delete set null,
-  collection_id uuid references collections(id) on delete set null,
-  sort_order    int not null default 0,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-create index idx_tasks_user on tasks(user_id);
-create index idx_tasks_due on tasks(user_id, due_date) where done = false;
-select create_updated_at_trigger('tasks');
+CREATE POLICY "Users can update their collection items"
+  ON collection_items
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
--- ═══════════════════════════════════════════════════════
--- 7. HABITS
--- ═══════════════════════════════════════════════════════
+CREATE POLICY "Users can delete their collection items"
+  ON collection_items
+  FOR DELETE
+  USING (auth.uid() = user_id);
 
-create table habits (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  emoji       text default '✅',
-  frequency   recurrence not null default 'daily',
-  target      int not null default 1,
-  active      boolean not null default true,
-  sort_order  int not null default 0,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index idx_habits_user on habits(user_id);
-select create_updated_at_trigger('habits');
+CREATE TRIGGER collection_items_updated_at_trigger
+  BEFORE UPDATE ON collection_items
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
 
-create table habit_logs (
-  id        uuid primary key default gen_random_uuid(),
-  user_id   uuid not null references auth.users(id) on delete cascade,
-  habit_id  uuid not null references habits(id) on delete cascade,
-  date      date not null,
-  value     int not null default 1,
-  constraint uq_habit_log unique (habit_id, date)
-);
-create index idx_habit_logs_date on habit_logs(user_id, date desc);
+CREATE INDEX idx_collection_items_user_id ON collection_items(user_id);
+CREATE INDEX idx_collection_items_collection_id ON collection_items(collection_id);
+CREATE INDEX idx_collection_items_entity_id ON collection_items(entity_id);
 
--- ═══════════════════════════════════════════════════════
--- 8. MOOD
--- ═══════════════════════════════════════════════════════
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ROUTINES TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
 
-create table mood_logs (
-  id        uuid primary key default gen_random_uuid(),
-  user_id   uuid not null references auth.users(id) on delete cascade,
-  date      date not null,
-  mood      int not null check (mood between 1 and 5),
-  note      text,
-  constraint uq_mood_date unique (user_id, date)
-);
-create index idx_mood_user_date on mood_logs(user_id, date desc);
+-- User-defined routines (morning routine, skincare, etc.)
+-- Time of day: morning, afternoon, evening, night
+--
+-- steps structure: [
+--   {"order":1,"name":"Banho","duration_min":15,"linked_entity_id":"...",icon":"shower"},
+--   {"order":2,"name":"Café","duration_min":10,"icon":"coffee"}
+-- ]
 
--- ═══════════════════════════════════════════════════════
--- 9. FINANCES (radar simplificado)
--- ═══════════════════════════════════════════════════════
-
-create type finance_type as enum ('income','expense');
-
-create table finance_categories (
-  id         uuid primary key default gen_random_uuid(),
-  user_id    uuid not null references auth.users(id) on delete cascade,
-  name       text not null,
-  emoji      text default '💰',
-  color      text default '#007AFF',
-  type       finance_type not null default 'expense',
-  sort_order int not null default 0,
-  constraint uq_fin_cat unique (user_id, name, type)
-);
-
-create table transactions (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  type          finance_type not null,
-  category_id   uuid references finance_categories(id) on delete set null,
-  description   text not null,
-  amount        numeric(12,2) not null,
-  date          date not null,
-  is_recurring  boolean not null default false,
-  notes         text,
-  person_id     uuid references people(id) on delete set null,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-create index idx_transactions_user on transactions(user_id);
-create index idx_transactions_date on transactions(user_id, date desc);
-select create_updated_at_trigger('transactions');
-
-create table bills (
-  id                  uuid primary key default gen_random_uuid(),
-  user_id             uuid not null references auth.users(id) on delete cascade,
-  description         text not null,
-  amount              numeric(12,2) not null,
-  due_day             int not null check (due_day between 1 and 31),
-  category_id         uuid references finance_categories(id) on delete set null,
-  active              boolean not null default true,
-  notify_days_before  int not null default 2,
-  notes               text,
-  created_at          timestamptz not null default now(),
-  updated_at          timestamptz not null default now()
-);
-create index idx_bills_user on bills(user_id);
-select create_updated_at_trigger('bills');
-
-create table financial_goals (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  target      numeric(12,2) not null,
-  current     numeric(12,2) not null default 0,
-  emoji       text default '🎯',
-  deadline    date,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index idx_fin_goals_user on financial_goals(user_id);
-select create_updated_at_trigger('financial_goals');
-
--- ═══════════════════════════════════════════════════════
--- 10. HEALTH (leve)
--- ═══════════════════════════════════════════════════════
-
-create table medications (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
-  dosage      text,
-  frequency   text not null default '1x dia',
-  time_of_day text,
-  active      boolean not null default true,
-  notify      boolean not null default true,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index idx_medications_user on medications(user_id);
-select create_updated_at_trigger('medications');
-
-create table medication_logs (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  medication_id uuid not null references medications(id) on delete cascade,
-  date          date not null,
-  taken         boolean not null default true,
-  constraint    uq_med_log unique (medication_id, date)
-);
-create index idx_med_logs_date on medication_logs(user_id, date desc);
-
-create table appointments (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  title       text not null,
-  person_id   uuid references people(id) on delete set null,
-  date        date not null,
-  time        time,
-  location    text,
-  notes       text,
-  gcal_id     text,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
-);
-create index idx_appointments_user on appointments(user_id);
-create index idx_appointments_date on appointments(user_id, date);
-select create_updated_at_trigger('appointments');
-
--- ═══════════════════════════════════════════════════════
--- 11. GOALS (multi-horizonte)
--- ═══════════════════════════════════════════════════════
-
-create type goal_horizon as enum ('week','month','6months','1year','2years','3years','5years','life');
-
-create table goals (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  title         text not null,
-  description   text,
-  horizon       goal_horizon not null default '1year',
-  progress      int not null default 0 check (progress between 0 and 100),
-  target_value  text,
-  current_value text,
-  emoji         text default '🎯',
-  category      text,
-  done          boolean not null default false,
-  done_at       timestamptz,
-  deadline      date,
-  parent_id     uuid references goals(id) on delete set null,
-  created_at    timestamptz not null default now(),
-  updated_at    timestamptz not null default now()
-);
-create index idx_goals_user on goals(user_id);
-create index idx_goals_horizon on goals(user_id, horizon);
-select create_updated_at_trigger('goals');
-
--- ═══════════════════════════════════════════════════════
--- 12. PROJECTS
--- ═══════════════════════════════════════════════════════
-
-create table projects (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  name        text not null,
+CREATE TABLE IF NOT EXISTS routines (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  name text NOT NULL,
   description text,
-  emoji       text default '📋',
-  status      text not null default 'active',
-  goal_id     uuid references goals(id) on delete set null,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+  time_of_day text CHECK (time_of_day IN ('morning', 'afternoon', 'evening', 'night')),
+  icon text,
+  steps jsonb NOT NULL DEFAULT '[]'::jsonb,
+  is_active boolean DEFAULT true,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_projects_user on projects(user_id);
-select create_updated_at_trigger('projects');
 
--- ═══════════════════════════════════════════════════════
--- 13. ARCHAEOLOGIST
--- ═══════════════════════════════════════════════════════
+ALTER TABLE routines ENABLE ROW LEVEL SECURITY;
 
-create table archaeologist_quests (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references auth.users(id) on delete cascade,
-  title           text not null,
-  description     text,
-  emoji           text default '🏛️',
-  status          text not null default 'pending',
-  memories_count  int not null default 0,
-  sort_order      int not null default 0,
-  completed_at    timestamptz,
-  created_at      timestamptz not null default now()
+CREATE POLICY "Users can view their routines"
+  ON routines
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create routines"
+  ON routines
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their routines"
+  ON routines
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their routines"
+  ON routines
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE TRIGGER routines_updated_at_trigger
+  BEFORE UPDATE ON routines
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_routines_user_id ON routines(user_id);
+CREATE INDEX idx_routines_is_active ON routines(is_active);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ROUTINE LOGS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Tracks completion of routine steps
+-- completed_steps: [0, 1, 2] (array of completed step indexes)
+
+CREATE TABLE IF NOT EXISTS routine_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  routine_id uuid NOT NULL REFERENCES routines(id) ON DELETE CASCADE,
+  date date NOT NULL,
+  completed_steps jsonb DEFAULT '[]'::jsonb,
+  started_at timestamptz,
+  completed_at timestamptz,
+  notes text,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_arq_user on archaeologist_quests(user_id);
 
--- ═══════════════════════════════════════════════════════
--- 14. LETTERS (cartas pro futuro)
--- ═══════════════════════════════════════════════════════
+ALTER TABLE routine_logs ENABLE ROW LEVEL SECURITY;
 
-create table letters (
-  id              uuid primary key default gen_random_uuid(),
-  user_id         uuid not null references auth.users(id) on delete cascade,
-  recipient       text not null,
-  title           text not null,
-  body            text not null,
-  open_date       date,
-  open_condition  text,
-  is_opened       boolean not null default false,
-  person_id       uuid references people(id) on delete set null,
-  created_at      timestamptz not null default now(),
-  updated_at      timestamptz not null default now()
+CREATE POLICY "Users can view their routine logs"
+  ON routine_logs
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create routine logs"
+  ON routine_logs
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their routine logs"
+  ON routine_logs
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX idx_routine_logs_user_id ON routine_logs(user_id);
+CREATE INDEX idx_routine_logs_routine_id ON routine_logs(routine_id);
+CREATE INDEX idx_routine_logs_date ON routine_logs(date);
+CREATE INDEX idx_routine_logs_user_date ON routine_logs(user_id, date);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- RECURRING ITEMS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Subscriptions, recurring purchases, maintenance tasks, medical appointments
+-- Categories: subscription, purchase, maintenance, medical, financial
+-- Frequencies: daily, weekly, monthly, quarterly, semi_annual, annual, custom
+
+CREATE TABLE IF NOT EXISTS recurring_items (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  entity_id uuid REFERENCES entities(id) ON DELETE SET NULL,
+  name text NOT NULL,
+  category text CHECK (category IN ('subscription', 'purchase', 'maintenance', 'medical', 'financial')),
+  amount decimal(10,2),
+  currency text DEFAULT 'BRL',
+  frequency text NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly', 'quarterly', 'semi_annual', 'annual', 'custom')),
+  frequency_days int,
+  next_due date,
+  last_completed date,
+  auto_renew boolean DEFAULT true,
+  reminder_days_before int DEFAULT 3,
+  notes text,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  is_active boolean DEFAULT true,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_letters_user on letters(user_id);
-select create_updated_at_trigger('letters');
 
--- ═══════════════════════════════════════════════════════
--- 15. AI MESSAGES
--- ═══════════════════════════════════════════════════════
+ALTER TABLE recurring_items ENABLE ROW LEVEL SECURITY;
 
-create table ai_messages (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  role        text not null check (role in ('user','assistant','system')),
-  content     text not null,
-  metadata    jsonb default '{}',
-  created_at  timestamptz not null default now()
+CREATE POLICY "Users can view their recurring items"
+  ON recurring_items
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create recurring items"
+  ON recurring_items
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their recurring items"
+  ON recurring_items
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can delete their recurring items"
+  ON recurring_items
+  FOR DELETE
+  USING (auth.uid() = user_id);
+
+CREATE TRIGGER recurring_items_updated_at_trigger
+  BEFORE UPDATE ON recurring_items
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_recurring_items_user_id ON recurring_items(user_id);
+CREATE INDEX idx_recurring_items_entity_id ON recurring_items(entity_id);
+CREATE INDEX idx_recurring_items_category ON recurring_items(category);
+CREATE INDEX idx_recurring_items_next_due ON recurring_items(next_due);
+CREATE INDEX idx_recurring_items_is_active ON recurring_items(is_active);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- EMERGENCY CARD TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Medical emergency information
+-- emergency_contacts structure: [
+--   {"name":"João","phone":"11999999999","relationship":"Esposa"},
+--   {"name":"Maria","phone":"11988888888","relationship":"Mãe"}
+-- ]
+
+CREATE TABLE IF NOT EXISTS emergency_card (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE UNIQUE,
+  blood_type text,
+  allergies text[],
+  medications text[],
+  conditions text[],
+  emergency_contacts jsonb DEFAULT '[]'::jsonb,
+  doctor_name text,
+  doctor_phone text,
+  health_insurance text,
+  health_insurance_number text,
+  organ_donor boolean,
+  notes text,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_ai_msgs_user on ai_messages(user_id, created_at desc);
 
--- ═══════════════════════════════════════════════════════
--- 16. VOICE ENTRIES
--- ═══════════════════════════════════════════════════════
+ALTER TABLE emergency_card ENABLE ROW LEVEL SECURITY;
 
-create table voice_entries (
-  id            uuid primary key default gen_random_uuid(),
-  user_id       uuid not null references auth.users(id) on delete cascade,
-  audio_url     text not null,
-  transcript    text,
-  duration_sec  int,
-  parsed_type   text,
-  parsed_ref_id uuid,
-  processed     boolean not null default false,
-  created_at    timestamptz not null default now()
+CREATE POLICY "Users can view their emergency card"
+  ON emergency_card
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their emergency card"
+  ON emergency_card
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE TRIGGER emergency_card_updated_at_trigger
+  BEFORE UPDATE ON emergency_card
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_emergency_card_user_id ON emergency_card(user_id);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- IDENTITY INSIGHTS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- AI-generated observations about user identity, preferences, and patterns
+-- Categories: preference, pattern, personality, habit, prediction
+-- Confidence: 0 to 1 (0.5 = neutral, 0.9 = high confidence)
+
+CREATE TABLE IF NOT EXISTS identity_insights (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  category text NOT NULL CHECK (category IN ('preference', 'pattern', 'personality', 'habit', 'prediction')),
+  insight text NOT NULL,
+  confidence decimal(3,2) DEFAULT 0.5,
+  evidence_count int DEFAULT 1,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  is_active boolean DEFAULT true,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  updated_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_voice_user on voice_entries(user_id, created_at desc);
 
--- ═══════════════════════════════════════════════════════
--- 17. REVIEWS (IA gera)
--- ═══════════════════════════════════════════════════════
+ALTER TABLE identity_insights ENABLE ROW LEVEL SECURITY;
 
-create type review_period as enum ('weekly','monthly','yearly');
+CREATE POLICY "Users can view their identity insights"
+  ON identity_insights
+  FOR SELECT
+  USING (auth.uid() = user_id);
 
-create table reviews (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  period      review_period not null,
-  start_date  date not null,
-  end_date    date not null,
-  content     text,
-  stats       jsonb default '{}',
-  created_at  timestamptz not null default now()
+CREATE POLICY "Users can manage their identity insights"
+  ON identity_insights
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their identity insights"
+  ON identity_insights
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE TRIGGER identity_insights_updated_at_trigger
+  BEFORE UPDATE ON identity_insights
+  FOR EACH ROW
+  EXECUTE FUNCTION update_updated_at();
+
+CREATE INDEX idx_identity_insights_user_id ON identity_insights(user_id);
+CREATE INDEX idx_identity_insights_category ON identity_insights(category);
+CREATE INDEX idx_identity_insights_is_active ON identity_insights(is_active);
+CREATE INDEX idx_identity_insights_confidence ON identity_insights(confidence);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- MICRO JOURNAL TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- Daily micro journal entries with AI-generated questions
+-- Mood: 1-5 scale (1=very sad, 5=very happy)
+-- One entry per day per user
+
+CREATE TABLE IF NOT EXISTS micro_journal (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  date date NOT NULL,
+  question text NOT NULL,
+  answer text,
+  mood int CHECK (mood >= 1 AND mood <= 5),
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, date)
 );
-create index idx_reviews_user on reviews(user_id, start_date desc);
 
--- ═══════════════════════════════════════════════════════
--- 18. SCHEDULE
--- ═══════════════════════════════════════════════════════
+ALTER TABLE micro_journal ENABLE ROW LEVEL SECURITY;
 
-create table schedule_items (
-  id          uuid primary key default gen_random_uuid(),
-  user_id     uuid not null references auth.users(id) on delete cascade,
-  title       text not null,
-  date        date not null,
-  start_time  time,
-  end_time    time,
-  location    text,
-  person_id   uuid references people(id) on delete set null,
-  gcal_id     text,
-  color       text,
-  notes       text,
-  created_at  timestamptz not null default now(),
-  updated_at  timestamptz not null default now()
+CREATE POLICY "Users can view their micro journal entries"
+  ON micro_journal
+  FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can create micro journal entries"
+  ON micro_journal
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their micro journal entries"
+  ON micro_journal
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX idx_micro_journal_user_id ON micro_journal(user_id);
+CREATE INDEX idx_micro_journal_date ON micro_journal(date);
+CREATE INDEX idx_micro_journal_user_date ON micro_journal(user_id, date);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- DAILY FEED TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+-- AI-generated proactive feed items
+-- Types: alert, reminder, insight, suggestion, memory, milestone
+-- Priority: higher values = more important
+
+CREATE TABLE IF NOT EXISTS daily_feed (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  date date NOT NULL,
+  type text NOT NULL CHECK (type IN ('alert', 'reminder', 'insight', 'suggestion', 'memory', 'milestone')),
+  title text NOT NULL,
+  body text,
+  priority int DEFAULT 0,
+  linked_entity_id uuid REFERENCES entities(id) ON DELETE SET NULL,
+  is_read boolean DEFAULT false,
+  is_dismissed boolean DEFAULT false,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP
 );
-create index idx_schedule_user on schedule_items(user_id, date);
-select create_updated_at_trigger('schedule_items');
 
--- ═══════════════════════════════════════════════════════
--- RLS (Row Level Security)
--- ═══════════════════════════════════════════════════════
+ALTER TABLE daily_feed ENABLE ROW LEVEL SECURITY;
 
-do $$
-declare t text;
-begin
-  for t in
-    select tablename from pg_tables
-    where schemaname = 'public'
-    and tablename not in ('schema_migrations','profiles','memory_people','memory_tags','memory_connections')
-  loop
-    execute format('alter table %I enable row level security', t);
-    execute format(
-      'create policy %I on %I for all using (user_id = auth.uid()) with check (user_id = auth.uid())',
-      'rls_' || t, t
-    );
-  end loop;
-end;
-$$;
+CREATE POLICY "Users can view their feed"
+  ON daily_feed
+  FOR SELECT
+  USING (auth.uid() = user_id);
 
--- Fix: profiles usa 'id' em vez de 'user_id'
-drop policy if exists rls_profiles on profiles;
-create policy rls_profiles on profiles for all
-  using (id = auth.uid()) with check (id = auth.uid());
+CREATE POLICY "Users can update their feed items"
+  ON daily_feed
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
 
--- Fix: junction tables sem user_id
-drop policy if exists rls_memory_people on memory_people;
-create policy rls_memory_people on memory_people for all
-  using (exists (select 1 from memories where id = memory_id and user_id = auth.uid()))
-  with check (exists (select 1 from memories where id = memory_id and user_id = auth.uid()));
+CREATE INDEX idx_daily_feed_user_id ON daily_feed(user_id);
+CREATE INDEX idx_daily_feed_date ON daily_feed(date);
+CREATE INDEX idx_daily_feed_type ON daily_feed(type);
+CREATE INDEX idx_daily_feed_priority ON daily_feed(priority DESC);
+CREATE INDEX idx_daily_feed_is_read ON daily_feed(is_read);
+CREATE INDEX idx_daily_feed_user_date ON daily_feed(user_id, date);
 
-drop policy if exists rls_memory_tags on memory_tags;
-create policy rls_memory_tags on memory_tags for all
-  using (exists (select 1 from memories where id = memory_id and user_id = auth.uid()))
-  with check (exists (select 1 from memories where id = memory_id and user_id = auth.uid()));
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- IMPORTS TABLE
+-- ═══════════════════════════════════════════════════════════════════════════════
 
-drop policy if exists rls_memory_connections on memory_connections;
-create policy rls_memory_connections on memory_connections for all
-  using (exists (select 1 from memories where id = memory_a and user_id = auth.uid()))
-  with check (exists (select 1 from memories where id = memory_a and user_id = auth.uid()));
+-- Tracks imported data sources (Google Photos, bank CSVs, WhatsApp, Spotify, Google Calendar)
+-- Status: pending, processing, completed, failed
 
--- ═══════════════════════════════════════════════════════
--- VIEWS
--- ═══════════════════════════════════════════════════════
+CREATE TABLE IF NOT EXISTS imports (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  source text NOT NULL CHECK (source IN ('google_photos', 'bank_csv', 'whatsapp', 'spotify', 'google_calendar')),
+  status text DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'completed', 'failed')),
+  entities_created int DEFAULT 0,
+  metadata jsonb DEFAULT '{}'::jsonb,
+  created_at timestamptz DEFAULT CURRENT_TIMESTAMP,
+  completed_at timestamptz
+);
 
-create or replace view v_finance_monthly as
-select
-  user_id,
-  date_trunc('month', date)::date as month,
-  sum(case when type = 'income' then amount else 0 end) as income,
-  sum(case when type = 'expense' then amount else 0 end) as expenses,
-  sum(case when type = 'income' then amount else -amount end) as balance
-from transactions
-group by user_id, date_trunc('month', date);
+ALTER TABLE imports ENABLE ROW LEVEL SECURITY;
 
-create or replace view v_habit_streaks as
-with dates as (
-  select habit_id, user_id, date,
-    date - (row_number() over (partition by habit_id order by date))::int as grp
-  from habit_logs
-),
-streaks as (
-  select habit_id, user_id, min(date) as streak_start, max(date) as streak_end, count(*) as streak_days
-  from dates group by habit_id, user_id, grp
-)
-select
-  habit_id, user_id,
-  max(streak_days) as best_streak,
-  (select streak_days from streaks s2
-   where s2.habit_id = streaks.habit_id and s2.streak_end = current_date
-   limit 1) as current_streak
-from streaks group by habit_id, user_id;
+CREATE POLICY "Users can view their imports"
+  ON imports
+  FOR SELECT
+  USING (auth.uid() = user_id);
 
-create or replace view v_today_briefing as
-select
-  p.id as user_id,
-  (select count(*) from tasks t where t.user_id = p.id and t.done = false and t.due_date <= current_date) as overdue_tasks,
-  (select count(*) from bills b where b.user_id = p.id and b.active = true
-   and b.due_day between extract(day from current_date)::int and extract(day from current_date)::int + 3) as upcoming_bills,
-  (select count(*) from appointments a where a.user_id = p.id and a.date = current_date) as today_appointments,
-  (select mood from mood_logs m where m.user_id = p.id and m.date = current_date limit 1) as today_mood
-from profiles p;
+CREATE POLICY "Users can create import jobs"
+  ON imports
+  FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update their import jobs"
+  ON imports
+  FOR UPDATE
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE INDEX idx_imports_user_id ON imports(user_id);
+CREATE INDEX idx_imports_source ON imports(source);
+CREATE INDEX idx_imports_status ON imports(status);
+CREATE INDEX idx_imports_created_at ON imports(created_at);
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- SCHEMA COMPLETE
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- Total tables: 17
+-- All tables have RLS enabled
+-- All tables with updated_at have triggers
+-- Full text search enabled with pg_trgm
+-- Complete indexing for performance
+-- ═══════════════════════════════════════════════════════════════════════════════

@@ -1,6 +1,6 @@
 'use client';
 
-import { Mic, Send, Link as LinkIcon } from 'lucide-react';
+import { Mic, Send, Link as LinkIcon, Sparkles, Eye, HelpCircle } from 'lucide-react';
 import { useState, useRef, useEffect } from 'react';
 
 interface Message {
@@ -25,10 +25,18 @@ const suggestions = [
   'Meu ano em números',
 ];
 
+const modes = [
+  { id: 'normal', label: 'Normal', icon: Sparkles },
+  { id: 'witness', label: 'Testemunha', icon: Eye },
+  { id: 'whatif', label: 'E se?', icon: HelpCircle },
+];
+
 export default function BrainPage() {
   const [messages, setMessages] = useState<Message[]>(initialMessages);
   const [inputValue, setInputValue] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [currentMode, setCurrentMode] = useState<string>('normal');
+  const [showInsights, setShowInsights] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // Auto-scroll to bottom
@@ -80,11 +88,32 @@ export default function BrainPage() {
       {/* Header */}
       <div className="px-5 pt-6 pb-4 flex-shrink-0">
         <h1 className="text-2xl font-bold mb-1" style={{ color: 'var(--t1)' }}>
-          🧠 Seu Cérebro
+          🧠 Cérebro
         </h1>
         <p className="text-sm" style={{ color: 'var(--t2)' }}>
           Pergunte qualquer coisa sobre sua vida
         </p>
+      </div>
+
+      {/* Mode Toggles */}
+      <div className="px-5 pb-3 flex-shrink-0 flex gap-2 overflow-x-auto">
+        {modes.map(mode => {
+          const ModeIcon = mode.icon
+          return (
+            <button
+              key={mode.id}
+              onClick={() => setCurrentMode(mode.id)}
+              className={`px-3 py-2 rounded-full text-xs whitespace-nowrap transition-all flex items-center gap-1.5 ${
+                currentMode === mode.id
+                  ? 'bg-acc text-white'
+                  : 'bg-card text-t1 hover:bg-card2'
+              }`}
+            >
+              <ModeIcon size={14} />
+              {mode.label}
+            </button>
+          )
+        })}
       </div>
 
       {/* Suggestions Row */}
@@ -219,12 +248,32 @@ export default function BrainPage() {
         )}
       </div>
 
+      {/* Identity Insights Panel */}
+      {showInsights && (
+        <div className="px-5 pb-4 flex-shrink-0 bg-card rounded-2xl mx-5 p-4 mb-3">
+          <div className="flex items-start justify-between mb-3">
+            <h3 className="text-sm font-semibold text-t1">Insights sobre você</h3>
+            <button
+              onClick={() => setShowInsights(false)}
+              className="text-t3 hover:text-t1 transition"
+            >
+              ✕
+            </button>
+          </div>
+          <ul className="space-y-2 text-xs text-t2">
+            <li>• Você tem paixão por futebol — 32 jogos do SPFC documentados</li>
+            <li>• Viajante frequente com 8 viagens documentadas</li>
+            <li>• Pessoa nostálgica que valoriza memórias com pessoas</li>
+          </ul>
+        </div>
+      )}
+
       {/* Input Bar */}
       <div
         className="flex-shrink-0 px-5 py-4 border-t"
         style={{ borderColor: 'var(--border)' }}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 mb-3">
           {/* Mic Button */}
           <button
             className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all hover:opacity-70"
@@ -260,6 +309,22 @@ export default function BrainPage() {
             style={{ backgroundColor: 'var(--acc)' }}
           >
             <Send size={16} color="white" />
+          </button>
+        </div>
+
+        {/* Action Buttons */}
+        <div className="flex gap-2 text-xs">
+          <button
+            onClick={() => setShowInsights(!showInsights)}
+            className="flex-1 px-3 py-2 rounded-full bg-card text-t1 hover:bg-card2 transition"
+          >
+            📊 Insights
+          </button>
+          <button className="flex-1 px-3 py-2 rounded-full bg-card text-t1 hover:bg-card2 transition">
+            📅 Anuário
+          </button>
+          <button className="flex-1 px-3 py-2 rounded-full bg-card text-t1 hover:bg-card2 transition">
+            📖 Autobiografia
           </button>
         </div>
       </div>

@@ -11,8 +11,10 @@ interface Person {
   bgColor: string;
   memory: string;
   category: 'Família' | 'Trabalho' | 'Profissionais' | 'Amigos';
+  lastContact: string;
+  daysSinceContact: number;
+  frequency: 'green' | 'yellow' | 'red';
   since?: string;
-  extra?: string;
 }
 
 const people: Person[] = [
@@ -24,6 +26,9 @@ const people: Person[] = [
     bgColor: 'bg-blue-500',
     memory: '12 jogos SPFC · Gol G4 · 48 memórias',
     category: 'Família',
+    lastContact: 'hoje',
+    daysSinceContact: 0,
+    frequency: 'green',
   },
   {
     id: 'mae',
@@ -33,6 +38,9 @@ const people: Person[] = [
     bgColor: 'bg-pink-500',
     memory: '32 memórias',
     category: 'Família',
+    lastContact: '2 dias atrás',
+    daysSinceContact: 2,
+    frequency: 'green',
   },
   {
     id: 'esposa',
@@ -43,6 +51,9 @@ const people: Person[] = [
     memory: 'Gramado · Oppenheimer · 87 memórias',
     category: 'Família',
     since: 'fev/2023',
+    lastContact: 'hoje',
+    daysSinceContact: 0,
+    frequency: 'green',
   },
   {
     id: 'gilberto',
@@ -52,6 +63,21 @@ const people: Person[] = [
     bgColor: 'bg-green-500',
     memory: 'Co-fundador · 5 jogos SPFC · 63 memórias',
     category: 'Trabalho',
+    lastContact: '2 dias atrás',
+    daysSinceContact: 2,
+    frequency: 'green',
+  },
+  {
+    id: 'amigo-carlos',
+    name: 'Carlos',
+    role: 'Amigo do trabalho',
+    emoji: '👥',
+    bgColor: 'bg-teal-500',
+    memory: '12 memórias',
+    category: 'Amigos',
+    lastContact: '18 dias atrás',
+    daysSinceContact: 18,
+    frequency: 'red',
   },
   {
     id: 'dr-roberto',
@@ -61,6 +87,9 @@ const people: Person[] = [
     bgColor: 'bg-orange-500',
     memory: 'Próxima: qua 14h · 4 consultas',
     category: 'Profissionais',
+    lastContact: 'fev 2025',
+    daysSinceContact: 30,
+    frequency: 'yellow',
   },
   {
     id: 'turma-futebol',
@@ -70,6 +99,9 @@ const people: Person[] = [
     bgColor: 'bg-purple-500',
     memory: '24 memórias juntos',
     category: 'Amigos',
+    lastContact: 'domingo passado',
+    daysSinceContact: 3,
+    frequency: 'green',
   },
 ];
 
@@ -163,12 +195,23 @@ export default function PeoplePage() {
                     </p>
                   </div>
 
-                  {/* Arrow */}
-                  <ChevronRight
-                    size={18}
-                    className="flex-shrink-0"
-                    style={{ color: 'var(--t2)' }}
-                  />
+                  {/* Frequency indicator and arrow */}
+                  <div className="flex items-center gap-2">
+                    <div
+                      className={`w-2 h-2 rounded-full ${
+                        person.frequency === 'green'
+                          ? 'bg-grn'
+                          : person.frequency === 'yellow'
+                          ? 'bg-org'
+                          : 'bg-red'
+                      }`}
+                    ></div>
+                    <ChevronRight
+                      size={18}
+                      className="flex-shrink-0"
+                      style={{ color: 'var(--t2)' }}
+                    />
+                  </div>
                 </div>
               ))}
             </div>
